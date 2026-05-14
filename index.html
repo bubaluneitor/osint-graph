@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OSINT Graph · EL80</title>
+<script src="https://unpkg.com/vis-network@9.1.6/dist/vis-network.min.js"></script>
+<link href="https://unpkg.com/vis-network@9.1.6/dist/vis-network.min.css" rel="stylesheet">
+<style>
+:root {
+  --bg: #000a14;
+  --panel: rgba(0,10,30,0.92);
+  --acc: #00ff88;
+  --acc2: #00d4ff;
+  --warn: #ffa502;
+  --danger: #ff4757;
+  --purple: #a855f7;
+  --text: #c8d6e5;
+  --dim: #576574;
+  --border: rgba(0,255,136,0.12);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: var(--bg);
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  color: var(--text);
+  height: 100vh; overflow: hidden;
+}
+#header {
+  position: fixed; top:0; left:0; right:0; z-index:100;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 20px;
+  display: flex; align-items: center; justify-content: space-between;
+  backdrop-filter: blur(12px);
+}
+#header h1 {
+  font-size: 16px; letter-spacing: 3px;
+  background: linear-gradient(135deg, var(--acc), var(--acc2));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+#header .badge {
+  font-size: 9px; color: var(--acc);
+  border: 1px solid var(--acc); border-radius: 20px;
+  padding: 3px 12px; letter-spacing: 2px;
+}
+#search {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  color: var(--text); padding: 6px 14px;
+  border-radius: 8px; width: 280px;
+  font-family: inherit; font-size: 11px;
+  transition: all 0.3s;
+}
+#search:focus { outline:none; border-color: var(--acc); box-shadow: 0 0 12px rgba(0,255,136,0.2); }
+#graph { position:fixed; top:52px; left:0; right:360px; bottom:0; }
+#sidebar {
+  position: fixed; top:52px; right:0; bottom:0; width:360px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  padding: 16px; overflow-y: auto;
+  backdrop-filter: blur(12px);
+}
+#sidebar h3 {
+  font-size: 11px; letter-spacing: 2px; color: var(--acc2);
+  text-transform: uppercase; margin-bottom: 12px;
+}
+.entity-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px; padding: 12px; margin-bottom: 8px;
+  cursor: pointer; transition: all 0.2s;
+}
+.entity-card:hover {
+  border-color: var(--acc);
+  background: rgba(0,255,136,0.04);
+}
+.entity-card .name { font-size: 12px; font-weight: bold; color:#fff; }
+.entity-card .type {
+  font-size: 8px; color: var(--dim); text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.entity-card .detail { font-size: 9px; color: var(--dim); margin-top: 4px; }
+.legend {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 12px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.legend-item {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 9px; color: var(--dim);
+}
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+#stats {
+  font-size: 9px; color: var(--dim);
+  display: flex; gap: 12px;
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+#stats span { color: var(--acc); }
+#detail-panel { display: none; }
+#detail-panel.show { display: block; }
+@keyframes pulse {
+  0%,100% { opacity:1; box-shadow:0 0 6px rgba(0,255,136,0.3); }
+  50% { opacity:0.7; box-shadow:0 0 16px rgba(0,255,136,0.6); }
+}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>⬡ OSINT · TARGET GRAPH</h1>
+  <input id="search" placeholder="🔍 Search entities..." onkeyup="filterGraph(this.value)">
+  <span class="badge">EL80</span>
+</div>
+
+<div id="graph"></div>
+
+<div id="sidebar">
+  <h3>▸ Legend</h3>
+  <div class="legend">
+    <div class="legend-item"><span class="legend-dot" style="background:var(--acc);"></span> Domain</div>
+    <div class="legend-item"><span class="legend-dot" style="background:var(--acc2);"></span> IP</div>
+    <div class="legend-item"><span class="legend-dot" style="background:var(--warn);"></span> Email</div>
+    <div class="legend-item"><span class="legend-dot" style="background:var(--purple);"></span> Person</div>
+    <div class="legend-item"><span class="legend-dot" style="background:var(--danger);"></span> Phone</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#f0f;"></span> Social</div>
+  </div>
+
+  <h3>▸ Entities</h3>
+  <div id="entity-list"></div>
+  <div id="detail-panel"></div>
+
+  <div id="stats">
+    Nodes: <span id="node-count">0</span>
+    Edges: <span id="edge-count">0</span>
+    Clusters: <span id="cluster-count">0</span>
+  </div>
+</div>
+
+<script>
+// ── OSINT GRAPH DATA ──────────────────────────
+const targetData = {
+  nodes: [
+    // Primary target
+    { id: 1, label: "target.com", group: "domain", title: "Primary target domain\nRegistrar: Namecheap\nCreated: 2022-03-15\nExpires: 2026-03-15\nCloudflare NS" },
+    { id: 2, label: "104.21.45.12", group: "ip", title: "Cloudflare IP\nAS13335 · Cloudflare Inc.\nLocation: San Francisco, US\n+120 other domains" },
+    { id: 3, label: "172.67.130.5", group: "ip", title: "Cloudflare IP\nAS13335\nOrigin IP leaked: 198.51.100.23" },
+    
+    // Subdomains
+    { id: 4, label: "mail.target.com", group: "domain", title: "Mail server\nGoogle Workspace\nMX: aspmx.l.google.com" },
+    { id: 5, label: "admin.target.com", group: "domain", title: "Admin panel\nBasic auth\nWordPress login" },
+    { id: 6, label: "api.target.com", group: "domain", title: "REST API\nGraphQL endpoint\nCORS: *" },
+    { id: 7, label: "cdn.target.com", group: "domain", title: "CDN\nAWS CloudFront\nOrigin: s3 bucket" },
+    
+    // Emails
+    { id: 8, label: "admin@target.com", group: "email", title: "Admin email\nBreached: 2 times\nLinkedIn: found\nTwitter: found" },
+    { id: 9, label: "info@target.com", group: "email", title: "Public contact\nNo breaches" },
+    { id: 10, label: "john.doe@gmail.com", group: "email", title: "Personal email\nBreached: 5 times\nAdobe, LinkedIn, Canva" },
+    
+    // People
+    { id: 11, label: "John Doe", group: "person", title: "CEO · Target Inc.\nLinkedIn: /in/johndoe\nTwitter: @johndoe\nLocation: Austin, TX" },
+    { id: 12, label: "Jane Smith", group: "person", title: "CTO\nGitHub: janesmith\nStackOverflow: user/12345\nDev.to: active" },
+    
+    // Phones
+    { id: 13, label: "+1 512-555-0187", group: "phone", title: "Phone · John Doe\nCarrier: AT&T\nType: Mobile\nLinked accounts: 4" },
+    
+    // Social
+    { id: 14, label: "@johndoe", group: "social", title: "Twitter/X\nFollowers: 2.3K\nJoined: 2018\nVerified: No" },
+    { id: 15, label: "linkedin.com/in/johndoe", group: "social", title: "LinkedIn\nConnections: 500+\nCurrent: CEO at Target Inc.\nPrevious: VP at Acme Corp" },
+    { id: 16, label: "github.com/janesmith", group: "social", title: "GitHub\nRepos: 47\nContributions: 1.2K\nLanguages: Python, Go, Rust" },
+    
+    // Infrastructure
+    { id: 17, label: "198.51.100.23", group: "ip", title: "Origin IP (leaked)\nAWS EC2 · us-east-1\nAS16509 · Amazon\nPort 22, 80, 443, 3306 open" },
+    { id: 18, label: "10.0.1.50", group: "ip", title: "Internal IP\nDatabase server\nMySQL 8.0\nPort 3306" },
+    
+    // Related domains
+    { id: 19, label: "target-inc.com", group: "domain", title: "Related domain\nSame registrant email\nRedirects to target.com" },
+    { id: 20, label: "target-blog.com", group: "domain", title: "Blog\nWordPress 6.4\nTheme: GeneratePress\nPlugins: 12" },
+  ],
+  edges: [
+    { from: 1, to: 2, label: "DNS A" },
+    { from: 1, to: 3, label: "DNS A" },
+    { from: 1, to: 4, label: "CNAME" },
+    { from: 1, to: 5, label: "CNAME" },
+    { from: 1, to: 6, label: "CNAME" },
+    { from: 1, to: 7, label: "CNAME" },
+    { from: 1, to: 8, label: "MX" },
+    { from: 1, to: 11, label: "WHOIS" },
+    { from: 8, to: 11, label: "Registered" },
+    { from: 10, to: 11, label: "Personal" },
+    { from: 10, to: 14, label: "Linked" },
+    { from: 11, to: 13, label: "Owns" },
+    { from: 11, to: 14, label: "Profile" },
+    { from: 11, to: 15, label: "Profile" },
+    { from: 12, to: 16, label: "Profile" },
+    { from: 12, to: 9, label: "Contact" },
+    { from: 1, to: 17, label: "Origin" },
+    { from: 17, to: 18, label: "VPC" },
+    { from: 1, to: 19, label: "Related" },
+    { from: 1, to: 20, label: "Related" },
+    { from: 11, to: 19, label: "Registrant" },
+    { from: 11, to: 20, label: "Registrant" },
+    { from: 17, to: 2, label: "Proxy" },
+    { from: 5, to: 17, label: "Backend" },
+  ]
+};
+
+// ── COLOR MAP ──────────────────────────────────
+const colorMap = {
+  domain: { bg: '#002211', border: '#00ff88', highlight: '#00ff44' },
+  ip: { bg: '#001122', border: '#00d4ff', highlight: '#00aaff' },
+  email: { bg: '#221100', border: '#ffa502', highlight: '#ffcc00' },
+  person: { bg: '#110022', border: '#a855f7', highlight: '#cc77ff' },
+  phone: { bg: '#220000', border: '#ff4757', highlight: '#ff7788' },
+  social: { bg: '#110011', border: '#ff00ff', highlight: '#ff55ff' },
+};
+
+// ── BUILD NODES ────────────────────────────────
+const nodes = new vis.DataSet(
+  targetData.nodes.map(n => ({
+    ...n,
+    color: {
+      background: colorMap[n.group].bg,
+      border: colorMap[n.group].border,
+      highlight: { background: colorMap[n.group].bg, border: colorMap[n.group].highlight }
+    },
+    font: { color: '#c8d6e5', size: 11, face: 'JetBrains Mono, monospace' },
+    shape: 'dot',
+    size: n.group === 'domain' ? 28 : n.group === 'person' ? 24 : n.group === 'ip' ? 22 : 18,
+    borderWidth: 2,
+  }))
+);
+
+const edges = new vis.DataSet(
+  targetData.edges.map(e => ({
+    ...e,
+    color: { color: 'rgba(0,255,136,0.2)', highlight: 'rgba(0,255,136,0.6)' },
+    arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+    font: { color: '#576574', size: 8, strokeWidth: 0 },
+  }))
+);
+
+// ── NETWORK ─────────────────────────────────────
+const container = document.getElementById('graph');
+const network = new vis.Network(container, { nodes, edges }, {
+  physics: {
+    solver: 'forceAtlas2Based',
+    forceAtlas2Based: {
+      gravitationalConstant: -35,
+      centralGravity: 0.005,
+      springLength: 140,
+      springConstant: 0.04,
+    },
+    stabilization: { iterations: 200 },
+  },
+  interaction: {
+    hover: true,
+    tooltipDelay: 100,
+    navigationButtons: true,
+    keyboard: true,
+  },
+  edges: {
+    smooth: { type: 'continuous' },
+  },
+});
+
+// ── CLICK HANDLER ──────────────────────────────
+network.on('click', function(params) {
+  if (params.nodes.length > 0) {
+    const nodeId = params.nodes[0];
+    const node = nodes.get(nodeId);
+    showDetail(node);
+  }
+});
+
+// ── ENTITY LIST ─────────────────────────────────
+function renderEntityList() {
+  const list = document.getElementById('entity-list');
+  let html = '';
+  const allNodes = nodes.get();
+  allNodes.forEach(n => {
+    html += `<div class="entity-card" onclick="focusNode(${n.id})">
+      <div class="name">${n.label}</div>
+      <div class="type">${n.group}</div>
+      <div class="detail">${(n.title || '').split('\n')[0]}</div>
+    </div>`;
+  });
+  list.innerHTML = html;
+}
+
+// ── DETAIL PANEL ────────────────────────────────
+function showDetail(node) {
+  const panel = document.getElementById('detail-panel');
+  panel.className = 'show';
+  panel.innerHTML = `
+    <h3 style="margin-top:16px;color:${colorMap[node.group].border};">▸ ${node.label}</h3>
+    <div style="font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px;">${node.group}</div>
+    <div style="font-size:10px;color:var(--text);line-height:1.8;white-space:pre-line;">${node.title || 'No details'}</div>
+    <button onclick="focusNode(${node.id})" style="
+      margin-top:12px;background:rgba(0,255,136,0.1);border:1px solid var(--acc);
+      color:var(--acc);padding:6px 16px;border-radius:6px;cursor:pointer;
+      font-family:inherit;font-size:10px;
+    ">🔍 Focus Node</button>
+  `;
+}
+
+// ── FOCUS NODE ──────────────────────────────────
+function focusNode(id) {
+  network.selectNodes([id]);
+  network.focus(id, { scale: 1.5, animation: { duration: 800, easingFunction: 'easeInOutQuad' } });
+  const node = nodes.get(id);
+  showDetail(node);
+}
+
+// ── SEARCH FILTER ──────────────────────────────
+function filterGraph(query) {
+  if (!query) {
+    nodes.forEach(n => nodes.update({ id: n.id, hidden: false }));
+    edges.forEach(e => edges.update({ id: e.id, hidden: false }));
+    renderEntityList();
+    updateStats();
+    return;
+  }
+  const q = query.toLowerCase();
+  const matchedNodeIds = new Set();
+  nodes.forEach(n => {
+    const match = n.label.toLowerCase().includes(q) || (n.title || '').toLowerCase().includes(q);
+    nodes.update({ id: n.id, hidden: !match });
+    if (match) matchedNodeIds.add(n.id);
+  });
+  edges.forEach(e => {
+    const visible = matchedNodeIds.has(e.from) && matchedNodeIds.has(e.to);
+    edges.update({ id: e.id, hidden: !visible });
+  });
+  renderEntityList();
+  updateStats();
+}
+
+// ── STATS ───────────────────────────────────────
+function updateStats() {
+  const visibleNodes = nodes.get().filter(n => !n.hidden).length;
+  const visibleEdges = edges.get().filter(e => !e.hidden).length;
+  document.getElementById('node-count').textContent = visibleNodes;
+  document.getElementById('edge-count').textContent = visibleEdges;
+  document.getElementById('cluster-count').textContent = Object.keys(colorMap).length;
+}
+
+// ── INIT ────────────────────────────────────────
+renderEntityList();
+updateStats();
+
+// Auto-focus first node on load
+setTimeout(() => focusNode(1), 1000);
+
+// Responsive resize
+window.addEventListener('resize', () => network.fit());
+</script>
+</body>
+</html>
